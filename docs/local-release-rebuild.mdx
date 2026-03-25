@@ -1,0 +1,125 @@
+---
+title: Local release rebuilds
+description: Rebuild and reinstall the cached Linux npm payload with a CI-matching local release flow.
+---
+
+# Local release rebuilds
+
+Use this flow when you need to rebuild the installed local Linux npm release,
+replace the cached payload under `~/.vibe-kanban/bin/.../linux-x64/`, and keep
+the runtime behaviour close to the CI release pipeline.
+
+## Why this exists
+
+The installed app is launched through `npx`, but the real payload comes from
+the cached files under:
+
+```bash
+~/.vibe-kanban/bin/<version>/linux-x64/
+```
+
+The important files are:
+
+- `vibe-kanban.zip`
+- `vibe-kanban`
+
+Replacing only `vibe-kanban` is not durable. The launcher can re-extract from
+`vibe-kanban.zip`, so production-style local patching should replace both.
+
+## Use the rebuild script
+
+The repository includes a helper script for the validated Linux x64 flow:
+
+```bash
+pnpm run deploy:installed-linux-release -- --cherry-pick <commit>
+```
+
+If the fix is already in the branch you want to build, you can omit the
+cherry-pick:
+
+```bash
+pnpm run deploy:installed-linux-release
+```
+
+By default the script:
+
+- builds from `origin/main`
+- creates a disposable worktree
+- installs the CI Linux toolchain if needed
+- builds the frontend first
+- builds the backend with `cargo zigbuild`
+- packages `npx-cli/dist/linux-x64/vibe-kanban.zip`
+- backs up the installed payload
+- replaces the installed `vibe-kanban` and `vibe-kanban.zip`
+- restarts `systemd --user` service `vibe-kanban`
+- verifies `/api/info`
+
+## What the script matches from CI
+
+This mirrors the Linux path in `.github/workflows/pre-release.yml`:
+
+- frontend build runs before backend build
+- Rust toolchain is `nightly-2025-12-04`
+- target is `x86_64-unknown-linux-musl`
+- backend build uses `cargo zigbuild`
+- the final package layout is `npx-cli/dist/linux-x64/vibe-kanban.zip`
+
+It does not reproduce CI-only signing or secret injection. Missing Sentry or
+PostHog secrets are expected for local rebuilds.
+
+## Important behaviour to remember
+
+### Migrations come from the local DB crate
+
+Local SQLite migrations are owned by `crates/db/migrations` and applied through
+`sqlx::migrate!` in `crates/db/src/lib.rs`.
+
+If your local `db.v2.sqlite` has already been migrated by a newer backend,
+older release binaries can fail at startup with errors such as:
+
+```text
+VersionMissing(<migration_version>)
+```
+
+That means the database state is ahead of the binary's embedded migration set.
+
+### Build the frontend before the backend
+
+`crates/server/build.rs` creates a dummy `packages/local-web/dist/index.html`
+when the frontend bundle is missing. If you build the backend first, the server
+binary can embed the placeholder page:
+
+```text
+Please build @vibe/local-web first
+```
+
+The safe rule is simple:
+
+1. build `packages/local-web/dist` first
+2. then build the backend
+
+If you ever see the placeholder page in a rebuilt binary, force a `server`
+rebuild after the real frontend build.
+
+### Check disk space early
+
+When the app starts failing to log in, create workspaces, or write scratch
+state, check disk space before debugging app logic.
+
+Typical symptoms include:
+
+- `database or disk is full`
+- `No space left on device`
+- tempdir creation failures under `/tmp`
+
+## Recommended branch flow
+
+For a long-lived personal patch branch, keep your fork branch separate from
+upstream tracking and rebase manually when needed:
+
+```bash
+git switch h4x-patch
+git fetch upstream
+git rebase upstream/main
+git push origin h4x-patch
+```
