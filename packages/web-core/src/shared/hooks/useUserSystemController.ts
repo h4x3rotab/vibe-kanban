@@ -40,6 +40,8 @@ export function useUserSystemController({
   const config = userSystemInfo?.config || null;
   const appVersion = userSystemInfo?.version || null;
   const previewProxyPort = userSystemInfo?.preview_proxy_port ?? null;
+  const chatHistoryTailEntries =
+    userSystemInfo?.chat_history_tail_entries ?? null;
   const environment = userSystemInfo?.environment || null;
   const machineId = userSystemInfo?.machine_id || null;
   const loginStatus = userSystemInfo?.login_status || null;
@@ -146,6 +148,7 @@ export function useUserSystemController({
       system: {
         appVersion,
         previewProxyPort,
+        chatHistoryTailEntries,
         config,
         environment,
         profiles,
@@ -156,6 +159,7 @@ export function useUserSystemController({
       },
       appVersion,
       previewProxyPort,
+      chatHistoryTailEntries,
       config,
       environment,
       profiles,
@@ -175,6 +179,7 @@ export function useUserSystemController({
     [
       machineId,
       appVersion,
+      chatHistoryTailEntries,
       capabilities,
       config,
       environment,

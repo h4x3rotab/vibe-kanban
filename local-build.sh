@@ -1,12 +1,57 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e  # Exit on any error
+set -euo pipefail
 
-# Detect OS and architecture
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT="$SCRIPT_DIR"
+BUILD_DESKTOP="0"
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--desktop|--all]
+
+Build local npx release artifacts using the same platform-specific path as the
+CI release pipeline.
+
+Options:
+  --desktop, --all   Also build the Tauri desktop app
+  --help             Show this help text
+EOF
+}
+
+case "${1:-}" in
+  --desktop|--all)
+    BUILD_DESKTOP="1"
+    shift
+    ;;
+  --help)
+    usage
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "error: unknown argument: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
+if [[ $# -ne 0 ]]; then
+  echo "error: unexpected arguments: $*" >&2
+  usage >&2
+  exit 1
+fi
+
+bash "$REPO_ROOT/scripts/build-release-npx.sh" --repo-root "$REPO_ROOT"
+
+if [[ "$BUILD_DESKTOP" != "1" ]]; then
+  exit 0
+fi
+
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 
-# Map architecture names
 case "$ARCH" in
   x86_64)
     ARCH="x64"
@@ -15,131 +60,68 @@ case "$ARCH" in
     ARCH="arm64"
     ;;
   *)
-    echo "⚠️  Warning: Unknown architecture $ARCH, using as-is"
+    echo "warning: unknown architecture $ARCH, using as-is" >&2
     ;;
 esac
 
-# Map OS names
 case "$OS" in
   linux)
-    OS="linux"
+    TAURI_OS="linux"
     ;;
   darwin)
-    OS="macos"
+    TAURI_OS="darwin"
     ;;
   *)
-    echo "⚠️  Warning: Unknown OS $OS, using as-is"
+    echo "warning: unknown OS $OS, using as-is" >&2
+    TAURI_OS="$OS"
     ;;
 esac
 
-PLATFORM="${OS}-${ARCH}"
+case "$ARCH" in
+  arm64)
+    TAURI_ARCH="aarch64"
+    ;;
+  x64)
+    TAURI_ARCH="x86_64"
+    ;;
+  *)
+    TAURI_ARCH="$ARCH"
+    ;;
+esac
 
-# Set CARGO_TARGET_DIR if not defined
-if [ -z "$CARGO_TARGET_DIR" ]; then
-  CARGO_TARGET_DIR="target"
-fi
+TAURI_PLATFORM="${TAURI_OS}-${TAURI_ARCH}"
+TAURI_CONF="$REPO_ROOT/crates/tauri-app/tauri.conf.json"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 
-echo "🔍 Detected platform: $PLATFORM"
-echo "🔧 Using target directory: $CARGO_TARGET_DIR"
+echo "Building Tauri desktop app for $TAURI_PLATFORM..."
 
-# Set API base URL for remote features
-export VK_SHARED_API_BASE="https://api.vibekanban.com"
-export VITE_VK_SHARED_API_BASE="https://api.vibekanban.com"
+node -e "
+  const fs = require('fs');
+  const conf = JSON.parse(fs.readFileSync('$TAURI_CONF', 'utf8'));
+  conf.plugins.updater.endpoints = conf.plugins.updater.endpoints.map((endpoint) =>
+    endpoint === '__TAURI_UPDATE_ENDPOINT__' ? 'https://localhost/disabled' : endpoint
+  );
+  fs.writeFileSync('$TAURI_CONF', JSON.stringify(conf, null, 2) + '\n');
+"
 
-echo "🧹 Cleaning previous builds..."
-rm -rf npx-cli/dist
-mkdir -p npx-cli/dist/$PLATFORM
+cleanup_tauri_conf() {
+  git -C "$REPO_ROOT" checkout -- "$TAURI_CONF"
+}
 
-echo "🔨 Building web app..."
-(cd packages/local-web && npm run build)
+trap cleanup_tauri_conf EXIT
 
-echo "🔨 Building Rust binaries..."
-cargo build --release --manifest-path Cargo.toml
-cargo build --release --bin vibe-kanban-mcp --manifest-path Cargo.toml
-
-echo "📦 Creating distribution package..."
-
-# Copy the main binary
-cp ${CARGO_TARGET_DIR}/release/server vibe-kanban
-zip -q vibe-kanban.zip vibe-kanban
-rm -f vibe-kanban 
-mv vibe-kanban.zip npx-cli/dist/$PLATFORM/vibe-kanban.zip
-
-# Copy the MCP binary
-cp ${CARGO_TARGET_DIR}/release/vibe-kanban-mcp vibe-kanban-mcp
-zip -q vibe-kanban-mcp.zip vibe-kanban-mcp
-rm -f vibe-kanban-mcp
-mv vibe-kanban-mcp.zip npx-cli/dist/$PLATFORM/vibe-kanban-mcp.zip
-
-# Copy the Review CLI binary
-cp ${CARGO_TARGET_DIR}/release/review vibe-kanban-review
-zip -q vibe-kanban-review.zip vibe-kanban-review
-rm -f vibe-kanban-review
-mv vibe-kanban-review.zip npx-cli/dist/$PLATFORM/vibe-kanban-review.zip
-
-echo "✅ CLI build complete!"
-echo "📁 Files created:"
-echo "   - npx-cli/dist/$PLATFORM/vibe-kanban.zip"
-echo "   - npx-cli/dist/$PLATFORM/vibe-kanban-mcp.zip"
-echo "   - npx-cli/dist/$PLATFORM/vibe-kanban-review.zip"
-
-# Optionally build the Tauri desktop app
-if [[ "$1" == "--desktop" || "$1" == "--all" ]]; then
-  # Map to Tauri platform naming
-  case "$OS" in
-    macos) TAURI_OS="darwin" ;;
-    linux) TAURI_OS="linux" ;;
-    *) TAURI_OS="$OS" ;;
-  esac
-  case "$ARCH" in
-    arm64) TAURI_ARCH="aarch64" ;;
-    x64) TAURI_ARCH="x86_64" ;;
-    *) TAURI_ARCH="$ARCH" ;;
-  esac
-  TAURI_PLATFORM="${TAURI_OS}-${TAURI_ARCH}"
-
-  echo ""
-  echo "🖥️  Building Tauri desktop app for $TAURI_PLATFORM..."
-
-  # Replace the updater endpoint placeholder with a dummy URL for local builds
-  # (CI injects the real R2 URL; locally the updater is non-functional)
-  TAURI_CONF="crates/tauri-app/tauri.conf.json"
-  node -e "
-    const fs = require('fs');
-    const conf = JSON.parse(fs.readFileSync('$TAURI_CONF', 'utf8'));
-    conf.plugins.updater.endpoints = conf.plugins.updater.endpoints.map(e =>
-      e === '__TAURI_UPDATE_ENDPOINT__' ? 'https://localhost/disabled' : e
-    );
-    fs.writeFileSync('$TAURI_CONF', JSON.stringify(conf, null, 2) + '\n');
-  "
-
+(
+  cd "$REPO_ROOT/crates/tauri-app"
   cargo tauri build
+)
 
-  # Restore tauri.conf.json
-  git checkout -- "$TAURI_CONF"
+TAURI_DIST="$REPO_ROOT/npx-cli/dist/tauri/$TAURI_PLATFORM"
+mkdir -p "$TAURI_DIST"
 
-  TAURI_DIST="npx-cli/dist/tauri/$TAURI_PLATFORM"
-  mkdir -p "$TAURI_DIST"
+BUNDLE_DIR="$REPO_ROOT/${CARGO_TARGET_DIR}/release/bundle"
+find "$BUNDLE_DIR" -name "*.app.tar.gz" ! -name "*.sig" -exec cp {} "$TAURI_DIST/" \; 2>/dev/null || true
+find "$BUNDLE_DIR" -name "*.AppImage.tar.gz" ! -name "*.sig" -exec cp {} "$TAURI_DIST/" \; 2>/dev/null || true
+find "$BUNDLE_DIR" -name "*-setup.exe" -exec cp {} "$TAURI_DIST/" \; 2>/dev/null || true
 
-  BUNDLE_DIR="${CARGO_TARGET_DIR}/release/bundle"
-  # Copy updater artifacts (tar.gz bundles or NSIS exe)
-  find "$BUNDLE_DIR" -name "*.app.tar.gz" ! -name "*.sig" -exec cp {} "$TAURI_DIST/" \; 2>/dev/null || true
-  find "$BUNDLE_DIR" -name "*.AppImage.tar.gz" ! -name "*.sig" -exec cp {} "$TAURI_DIST/" \; 2>/dev/null || true
-  find "$BUNDLE_DIR" -name "*-setup.exe" -exec cp {} "$TAURI_DIST/" \; 2>/dev/null || true
-
-  echo "✅ Desktop app built:"
-  ls -la "$TAURI_DIST/"
-fi
-
-echo ""
-echo "📦 Installing npx-cli dependencies..."
-(cd npx-cli && npm ci)
-
-echo ""
-echo "🔨 Building npx-cli TypeScript..."
-(cd npx-cli && npm run build)
-
-echo ""
-echo "🚀 To test locally, run:"
-echo "   cd npx-cli && node bin/cli.js                # browser mode (default)"
-echo "   cd npx-cli && node bin/cli.js --desktop       # desktop mode (requires --desktop or --all build flag)"
+echo "Desktop app built:"
+ls -la "$TAURI_DIST/"

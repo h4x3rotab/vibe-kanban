@@ -4,6 +4,7 @@ import {
   PatchType,
 } from 'shared/types';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
 import type {
@@ -30,6 +31,7 @@ export const useConversationHistory = ({
   onTimelineUpdated,
   scopeKey,
 }: UseConversationHistoryParams): UseConversationHistoryResult => {
+  const { chatHistoryTailEntries } = useUserSystem();
   const {
     executionProcessesVisible: executionProcessesRaw,
     isLoading,
@@ -63,6 +65,21 @@ export const useConversationHistory = ({
   ) => {
     const state = displayedExecutionProcesses.current;
     mutator(state);
+  };
+
+  const isConversationExecutionProcess = (
+    executionProcess:
+      | Pick<ExecutionProcess, 'executor_action'>
+      | {
+          executor_action: ExecutionProcess['executor_action'];
+        }
+  ) => {
+    const type = executionProcess.executor_action.typ.type;
+    return (
+      type === 'CodingAgentInitialRequest' ||
+      type === 'CodingAgentFollowUpRequest' ||
+      type === 'ReviewRequest'
+    );
   };
 
   // The hook owns transport, loading, and reconciliation.
@@ -137,14 +154,7 @@ export const useConversationHistory = ({
     executionProcessState: ExecutionProcessStateStore
   ): PatchTypeWithKey[] => {
     return Object.values(executionProcessState)
-      .filter(
-        (p) =>
-          p.executionProcess.executor_action.typ.type ===
-            'CodingAgentFollowUpRequest' ||
-          p.executionProcess.executor_action.typ.type ===
-            'CodingAgentInitialRequest' ||
-          p.executionProcess.executor_action.typ.type === 'ReviewRequest'
-      )
+      .filter((p) => isConversationExecutionProcess(p.executionProcess))
       .sort(
         (a, b) =>
           new Date(
@@ -164,6 +174,57 @@ export const useConversationHistory = ({
       ) ?? []
     );
   };
+
+  const applyHistoricConversationTailLimit = useCallback(
+    (executionProcessState: ExecutionProcessStateStore) => {
+      if (chatHistoryTailEntries == null) return;
+
+      const runningProcessIds = new Set(
+        executionProcesses.current
+          .filter(
+            (process) =>
+              process.status === ExecutionProcessStatus.running &&
+              process.run_reason !== 'devserver'
+          )
+          .map((process) => process.id)
+      );
+      let remaining = chatHistoryTailEntries;
+
+      for (const processState of Object.values(executionProcessState)
+        .filter(
+          (state) =>
+            isConversationExecutionProcess(state.executionProcess) &&
+            !runningProcessIds.has(state.executionProcess.id)
+        )
+        .sort(
+          (a, b) =>
+            new Date(
+              b.executionProcess.created_at as unknown as string
+            ).getTime() -
+            new Date(
+              a.executionProcess.created_at as unknown as string
+            ).getTime()
+        )) {
+        if (remaining === 0) {
+          delete executionProcessState[processState.executionProcess.id];
+          continue;
+        }
+
+        const entryCount = processState.entries.length;
+        if (entryCount <= remaining) {
+          remaining -= entryCount;
+          continue;
+        }
+
+        executionProcessState[processState.executionProcess.id] = {
+          ...processState,
+          entries: processState.entries.slice(entryCount - remaining),
+        };
+        remaining = 0;
+      }
+    },
+    [chatHistoryTailEntries]
+  );
 
   const emitEntries = useCallback(
     (
@@ -262,6 +323,7 @@ export const useConversationHistory = ({
       const localDisplayedExecutionProcesses: ExecutionProcessStateStore = {};
 
       if (!executionProcesses?.current) return localDisplayedExecutionProcesses;
+      if (chatHistoryTailEntries === 0) return localDisplayedExecutionProcesses;
 
       for (const executionProcess of [
         ...executionProcesses.current,
@@ -279,10 +341,19 @@ export const useConversationHistory = ({
           executionProcess,
           entries: entriesWithKey,
         };
+        applyHistoricConversationTailLimit(localDisplayedExecutionProcesses);
 
         if (
           maxEntries != null &&
-          flattenEntries(localDisplayedExecutionProcesses).length > maxEntries
+          flattenEntries(localDisplayedExecutionProcesses).length >= maxEntries
+        ) {
+          break;
+        }
+
+        if (
+          chatHistoryTailEntries != null &&
+          flattenEntries(localDisplayedExecutionProcesses).length >=
+            chatHistoryTailEntries
         ) {
           break;
         }
@@ -290,12 +361,24 @@ export const useConversationHistory = ({
 
       return localDisplayedExecutionProcesses;
     },
-    [executionProcesses]
+    [
+      applyHistoricConversationTailLimit,
+      chatHistoryTailEntries,
+      executionProcesses,
+    ]
   );
 
   const loadRemainingEntriesInBatches = useCallback(
     async (batchSize: number): Promise<boolean> => {
       if (!executionProcesses?.current) return false;
+      if (chatHistoryTailEntries === 0) return false;
+      if (
+        chatHistoryTailEntries != null &&
+        flattenEntries(displayedExecutionProcesses.current).length >=
+          chatHistoryTailEntries
+      ) {
+        return false;
+      }
 
       let anyUpdated = false;
       for (const executionProcess of [
@@ -319,10 +402,21 @@ export const useConversationHistory = ({
             executionProcess,
             entries: entriesWithKey,
           };
+          applyHistoricConversationTailLimit(state);
         });
 
         if (
-          flattenEntries(displayedExecutionProcesses.current).length > batchSize
+          chatHistoryTailEntries != null &&
+          flattenEntries(displayedExecutionProcesses.current).length >=
+            chatHistoryTailEntries
+        ) {
+          anyUpdated = true;
+          break;
+        }
+
+        if (
+          flattenEntries(displayedExecutionProcesses.current).length >=
+          batchSize
         ) {
           anyUpdated = true;
           break;
@@ -331,7 +425,11 @@ export const useConversationHistory = ({
       }
       return anyUpdated;
     },
-    [executionProcesses]
+    [
+      applyHistoricConversationTailLimit,
+      chatHistoryTailEntries,
+      executionProcesses,
+    ]
   );
 
   const ensureProcessVisible = useCallback((p: ExecutionProcess) => {
@@ -404,7 +502,13 @@ export const useConversationHistory = ({
 
       emittedEmptyInitialRef.current = false;
 
-      const allInitialEntries = await loadHistoricEntries(MIN_INITIAL_ENTRIES);
+      const initialHistoricEntryTarget =
+        chatHistoryTailEntries == null
+          ? MIN_INITIAL_ENTRIES
+          : Math.min(MIN_INITIAL_ENTRIES, chatHistoryTailEntries);
+      const allInitialEntries = await loadHistoricEntries(
+        initialHistoricEntryTarget
+      );
       if (cancelled) return;
       loadedInitialEntries.current = true;
       mergeIntoDisplayed((state) => {
@@ -429,6 +533,7 @@ export const useConversationHistory = ({
     scopeKey,
     idListKey,
     isLoading,
+    chatHistoryTailEntries,
     loadHistoricEntries,
     loadRemainingEntriesInBatches,
     emitEntries,
@@ -508,6 +613,7 @@ export const useConversationHistory = ({
             executionProcess: process,
             entries: entriesWithKey,
           };
+          applyHistoricConversationTailLimit(state);
         });
         anyUpdated = true;
       }
@@ -516,7 +622,12 @@ export const useConversationHistory = ({
         emitEntries(displayedExecutionProcesses.current, 'running', false);
       }
     })();
-  }, [idStatusKey, executionProcessesRaw, emitEntries]);
+  }, [
+    applyHistoricConversationTailLimit,
+    idStatusKey,
+    executionProcessesRaw,
+    emitEntries,
+  ]);
 
   // If an execution process is removed, remove it from the state
   useEffect(() => {

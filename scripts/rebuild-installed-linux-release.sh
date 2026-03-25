@@ -202,13 +202,9 @@ parse_args() {
 parse_args "$@"
 
 require_command git
-require_command curl
-require_command tar
-require_command zip
 require_command sha256sum
 require_command rustup
-require_command pnpm
-require_command npm
+require_command bash
 require_command systemctl
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -235,9 +231,6 @@ if [[ "$SKIP_FETCH" != "1" ]]; then
 fi
 
 ensure_linux_build_dependencies
-ensure_rust_toolchain
-ZIG_DIR=$(ensure_zig)
-ensure_cargo_zigbuild
 
 WORKTREE_DIR=$(mktemp -d "/tmp/vibe-kanban-release-build-XXXXXX")
 rmdir "$WORKTREE_DIR"
@@ -254,51 +247,14 @@ if [[ -n "$CHERRY_PICK_COMMIT" ]]; then
   fi
 fi
 
-log "Installing Node dependencies in worktree"
-(
-  cd "$WORKTREE_DIR"
-  pnpm install
-)
-
-log "Building frontend artifact"
-(
-  cd "$WORKTREE_DIR/packages/local-web"
-  export VITE_VK_SHARED_API_BASE="$API_BASE"
-  npm run build
-)
-
-log "Building backend binaries with cargo zigbuild"
-(
-  cd "$WORKTREE_DIR"
-  export PATH="${ZIG_DIR}:$PATH"
-  export CARGO_INCREMENTAL=0
-  export VK_SHARED_API_BASE="$API_BASE"
-  export VK_SHARED_RELAY_API_BASE="$RELAY_API_BASE"
-  cargo +"$RUST_TOOLCHAIN" zigbuild --release --target "$RUST_TARGET" \
-    -p server -p mcp -p review \
-    --bin server --bin vibe-kanban-mcp --bin review
-)
-
-log "Packaging linux-x64 npm payload"
-(
-  cd "$WORKTREE_DIR"
-  mkdir -p dist "npx-cli/dist/${PLATFORM_NAME}" \
-    "vibe-kanban-${PLATFORM_NAME}" \
-    "vibe-kanban-mcp-${PLATFORM_NAME}" \
-    "vibe-kanban-review-${PLATFORM_NAME}"
-
-  cp "target/${RUST_TARGET}/release/server" "dist/vibe-kanban-${PLATFORM_NAME}"
-  cp "target/${RUST_TARGET}/release/vibe-kanban-mcp" "dist/vibe-kanban-mcp-${PLATFORM_NAME}"
-  cp "target/${RUST_TARGET}/release/review" "dist/vibe-kanban-review-${PLATFORM_NAME}"
-
-  cp "dist/vibe-kanban-${PLATFORM_NAME}" "vibe-kanban-${PLATFORM_NAME}/vibe-kanban"
-  cp "dist/vibe-kanban-mcp-${PLATFORM_NAME}" "vibe-kanban-mcp-${PLATFORM_NAME}/vibe-kanban-mcp"
-  cp "dist/vibe-kanban-review-${PLATFORM_NAME}" "vibe-kanban-review-${PLATFORM_NAME}/vibe-kanban-review"
-
-  zip -jq "npx-cli/dist/${PLATFORM_NAME}/vibe-kanban.zip" "vibe-kanban-${PLATFORM_NAME}/vibe-kanban"
-  zip -jq "npx-cli/dist/${PLATFORM_NAME}/vibe-kanban-mcp.zip" "vibe-kanban-mcp-${PLATFORM_NAME}/vibe-kanban-mcp"
-  zip -jq "npx-cli/dist/${PLATFORM_NAME}/vibe-kanban-review.zip" "vibe-kanban-review-${PLATFORM_NAME}/vibe-kanban-review"
-)
+log "Building CI-style npx release payload"
+bash "${REPO_ROOT}/scripts/build-release-npx.sh" \
+  --repo-root "$WORKTREE_DIR" \
+  --platform "$PLATFORM_NAME" \
+  --api-base "$API_BASE" \
+  --relay-api-base "$RELAY_API_BASE" \
+  --rust-toolchain "$RUST_TOOLCHAIN" \
+  --install-node-deps
 
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 BUILT_SERVER="${WORKTREE_DIR}/target/${RUST_TARGET}/release/server"
@@ -321,7 +277,20 @@ sleep 2
 
 log "Verifying service health"
 systemctl --user status "$SERVICE_NAME" --no-pager
-curl --fail --silent --show-error "http://127.0.0.1:${PORT}/api/info" >/dev/null
+API_INFO=$(curl --fail --silent --show-error "http://127.0.0.1:${PORT}/api/info")
+
+node -e '
+const response = JSON.parse(process.argv[1]);
+const expected = process.argv[2];
+const actual = response?.data?.shared_api_base ?? null;
+
+if (expected && actual !== expected) {
+  console.error(
+    `shared_api_base mismatch: expected ${expected}, got ${actual}`
+  );
+  process.exit(1);
+}
+' "$API_INFO" "$API_BASE"
 
 log "Installed binary sha256:"
 sha256sum "${INSTALL_DIR}/vibe-kanban"
