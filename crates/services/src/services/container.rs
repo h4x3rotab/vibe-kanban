@@ -89,7 +89,7 @@ mod tests {
     use executors::logs::{NormalizedEntry, NormalizedEntryType, utils::ConversationPatch};
     use utils::log_msg::LogMsg;
 
-    use super::{apply_upsert_patch, build_historical_tail_patches, take_historical_log_tail};
+    use super::{apply_upsert_patch, build_historical_page_patches, take_historical_log_page};
 
     fn text_entry(content: &str) -> NormalizedEntry {
         NormalizedEntry {
@@ -108,11 +108,27 @@ mod tests {
             LogMsg::Stdout("three".into()),
         ];
 
-        let tailed = take_historical_log_tail(messages, 2);
+        let tailed = take_historical_log_page(messages, 2, 0);
 
         assert_eq!(tailed.len(), 2);
         assert!(matches!(tailed[0], LogMsg::Stderr(ref content) if content == "two"));
         assert!(matches!(tailed[1], LogMsg::Stdout(ref content) if content == "three"));
+    }
+
+    #[test]
+    fn historical_raw_log_page_skips_newest_entries() {
+        let messages = vec![
+            LogMsg::Stdout("one".into()),
+            LogMsg::Stderr("two".into()),
+            LogMsg::Stdout("three".into()),
+            LogMsg::Stderr("four".into()),
+        ];
+
+        let page = take_historical_log_page(messages, 2, 1);
+
+        assert_eq!(page.len(), 2);
+        assert!(matches!(page[0], LogMsg::Stderr(ref content) if content == "two"));
+        assert!(matches!(page[1], LogMsg::Stdout(ref content) if content == "three"));
     }
 
     #[test]
@@ -160,7 +176,7 @@ mod tests {
         ];
 
         let patches =
-            build_historical_tail_patches(&history, 2).expect("tail snapshot should build");
+            build_historical_page_patches(&history, 2, 0).expect("tail snapshot should build");
 
         let mut snapshot = serde_json::json!({ "entries": [] });
         for patch in &patches {
@@ -193,30 +209,66 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn historical_page_patches_skip_newest_entries() {
+        let history = vec![
+            LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+                0,
+                text_entry("first"),
+            )),
+            LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+                1,
+                text_entry("second"),
+            )),
+            LogMsg::JsonPatch(ConversationPatch::replace(1, text_entry("second-updated"))),
+            LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+                2,
+                text_entry("third"),
+            )),
+        ];
+
+        let patches =
+            build_historical_page_patches(&history, 1, 1).expect("page snapshot should build");
+
+        let mut snapshot = serde_json::json!({ "entries": [] });
+        for patch in &patches {
+            apply_upsert_patch(&mut snapshot, patch).expect("patch should apply");
+        }
+
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "entries": [{
+                    "type": "NORMALIZED_ENTRY",
+                    "content": {
+                        "entry_type": { "type": "system_message" },
+                        "content": "second-updated",
+                        "timestamp": null,
+                        "metadata": null,
+                    }
+                }]
+            })
+        );
+    }
 }
 
-fn take_historical_log_tail(messages: Vec<LogMsg>, tail_entries: usize) -> Vec<LogMsg> {
-    let total_entries = messages
-        .iter()
+fn take_historical_log_page(
+    messages: Vec<LogMsg>,
+    tail_entries: usize,
+    skip_tail_entries: usize,
+) -> Vec<LogMsg> {
+    let messages: Vec<_> = messages
+        .into_iter()
         .filter(|msg| matches!(msg, LogMsg::Stdout(_) | LogMsg::Stderr(_)))
-        .count();
-    let skip_entries = total_entries.saturating_sub(tail_entries);
-    let mut skipped = 0;
+        .collect();
+    let end = messages.len().saturating_sub(skip_tail_entries);
+    let start = end.saturating_sub(tail_entries);
 
     messages
         .into_iter()
-        .filter(|msg| {
-            if !matches!(msg, LogMsg::Stdout(_) | LogMsg::Stderr(_)) {
-                return false;
-            }
-
-            if skipped < skip_entries {
-                skipped += 1;
-                return false;
-            }
-
-            true
-        })
+        .skip(start)
+        .take(end.saturating_sub(start))
         .collect()
 }
 
@@ -249,9 +301,10 @@ fn apply_upsert_patch(snapshot: &mut serde_json::Value, patch: &Patch) -> Result
     Ok(())
 }
 
-fn build_historical_tail_patches(
+fn build_historical_page_patches(
     history: &[LogMsg],
     tail_entries: usize,
+    skip_tail_entries: usize,
 ) -> Result<Vec<Patch>, AnyhowError> {
     let mut snapshot = serde_json::json!({ "entries": [] });
 
@@ -265,10 +318,11 @@ fn build_historical_tail_patches(
         .get_mut("entries")
         .and_then(serde_json::Value::as_array_mut)
         .ok_or_else(|| anyhow!("historical normalized snapshot is missing entries array"))?;
-    let start = entries.len().saturating_sub(tail_entries);
-    let tailed_entries: Vec<_> = entries.drain(start..).collect();
+    let end = entries.len().saturating_sub(skip_tail_entries);
+    let start = end.saturating_sub(tail_entries);
+    let paged_entries: Vec<_> = entries.drain(start..end).collect();
 
-    Ok(tailed_entries
+    Ok(paged_entries
         .into_iter()
         .enumerate()
         .map(|(index, value)| {
@@ -994,6 +1048,7 @@ pub trait ContainerService {
         &self,
         id: &Uuid,
         tail_entries: Option<usize>,
+        skip_tail_entries: Option<usize>,
     ) -> Option<futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>> {
         if let Some(store) = self.get_msg_store_by_id(id).await {
             // First try in-memory store
@@ -1011,7 +1066,7 @@ pub trait ContainerService {
         } else {
             let messages = execution_process::load_raw_log_messages(&self.db().pool, *id).await?;
             let messages = if let Some(tail_entries) = tail_entries {
-                take_historical_log_tail(messages, tail_entries)
+                take_historical_log_page(messages, tail_entries, skip_tail_entries.unwrap_or(0))
             } else {
                 messages
             };
@@ -1033,6 +1088,7 @@ pub trait ContainerService {
         &self,
         id: &Uuid,
         tail_entries: Option<usize>,
+        skip_tail_entries: Option<usize>,
     ) -> Option<futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>> {
         struct AbortOnDrop {
             handle: Option<JoinHandle<()>>,
@@ -1225,19 +1281,21 @@ pub trait ContainerService {
                         AbortJoinHandle(Some(handle)).wait().await;
                     }
 
-                    let patches =
-                        match build_historical_tail_patches(&temp_store.get_history(), tail_entries)
-                        {
-                            Ok(patches) => patches,
-                            Err(err) => {
-                                tracing::error!(
-                                    "Failed to build tailed historical normalized log replay for {}: {:#}",
-                                    execution_id,
-                                    err
-                                );
-                                Vec::new()
-                            }
-                        };
+                    let patches = match build_historical_page_patches(
+                        &temp_store.get_history(),
+                        tail_entries,
+                        skip_tail_entries.unwrap_or(0),
+                    ) {
+                        Ok(patches) => patches,
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to build tailed historical normalized log replay for {}: {:#}",
+                                execution_id,
+                                err
+                            );
+                            Vec::new()
+                        }
+                    };
 
                     patches
                         .into_iter()

@@ -47,6 +47,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const retryAttemptsRef = useRef<number>(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
+  const activeStreamKey = enabled && endpoint ? endpoint : undefined;
 
   const injectInitialEntry = options?.injectInitialEntry;
   const deduplicatePatches = options?.deduplicatePatches;
@@ -63,31 +64,43 @@ export const useJsonPatchWsStream = <T extends object>(
   }
 
   useEffect(() => {
-    if (!enabled || !endpoint) {
-      // Close connection and reset state
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (retryTimerRef.current) {
-        window.clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-      retryAttemptsRef.current = 0;
-      finishedRef.current = false;
-      setData(undefined);
-      setIsConnected(false);
-      setIsInitialized(false);
-      setError(null);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (retryTimerRef.current) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+
+    retryAttemptsRef.current = 0;
+    finishedRef.current = false;
+    setIsConnected(false);
+    setError(null);
+    initializedForEndpointRef.current = activeStreamKey;
+
+    if (!activeStreamKey) {
       dataRef.current = undefined;
+      setData(undefined);
+      setIsInitialized(false);
       return;
     }
 
-    // Initialize data
+    dataRef.current = initialData();
+    if (injectInitialEntry) {
+      injectInitialEntry(dataRef.current);
+    }
+    setData(undefined);
+    setIsInitialized(false);
+  }, [activeStreamKey, initialData, injectInitialEntry]);
+
+  useEffect(() => {
+    if (!activeStreamKey) {
+      return;
+    }
+
     if (!dataRef.current) {
       dataRef.current = initialData();
-
-      // Inject initial entry if provided
       if (injectInitialEntry) {
         injectInitialEntry(dataRef.current);
       }
@@ -95,14 +108,12 @@ export const useJsonPatchWsStream = <T extends object>(
 
     let cancelled = false;
 
-    // Create WebSocket if it doesn't exist
     if (!wsRef.current) {
-      // Reset finished flag for new connection
       finishedRef.current = false;
 
       void (async () => {
         try {
-          const ws = await openLocalApiWebSocket(endpoint);
+          const ws = await openLocalApiWebSocket(activeStreamKey);
 
           if (cancelled) {
             ws.close();
@@ -145,7 +156,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
               // Handle Ready messages (initial data has been sent)
               if ('Ready' in msg) {
-                initializedForEndpointRef.current = endpoint;
+                initializedForEndpointRef.current = activeStreamKey;
                 setIsInitialized(true);
                 setError(null);
               }
@@ -225,21 +236,17 @@ export const useJsonPatchWsStream = <T extends object>(
         retryTimerRef.current = null;
       }
       finishedRef.current = false;
-      dataRef.current = undefined;
-      setData(undefined);
-      setIsInitialized(false);
     };
   }, [
-    endpoint,
-    enabled,
+    activeStreamKey,
     initialData,
     injectInitialEntry,
-    deduplicatePatches,
     retryNonce,
+    deduplicatePatches,
   ]);
 
   const isInitializedForCurrentEndpoint =
-    isInitialized && initializedForEndpointRef.current === endpoint;
+    isInitialized && initializedForEndpointRef.current === activeStreamKey;
 
   return {
     data,

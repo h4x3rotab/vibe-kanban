@@ -36,6 +36,13 @@ struct SessionExecutionProcessQuery {
 }
 
 async fn get_execution_process_by_id(
+#[derive(Debug, Default, Deserialize)]
+pub struct ExecutionProcessHistoryQuery {
+    pub tail_entries: Option<usize>,
+    pub skip_tail_entries: Option<usize>,
+}
+
+pub async fn get_execution_process_by_id(
     Extension(execution_process): Extension<ExecutionProcess>,
     State(_deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
@@ -46,15 +53,19 @@ async fn stream_raw_logs_ws(
     ws: SignedWsUpgrade,
     State(deployment): State<DeploymentImpl>,
     Path(exec_id): Path<Uuid>,
+    Query(query): Query<ExecutionProcessHistoryQuery>,
 ) -> impl IntoResponse {
-    let tail_entries = chat_history_tail_entries();
+    let tail_entries = query.tail_entries.or_else(chat_history_tail_entries);
+    let skip_tail_entries = query.skip_tail_entries;
 
     // Always accept the WebSocket upgrade — handle "not found" inside the
     // connection by sending `finished` and closing cleanly, instead of
     // rejecting with HTTP 404 which the browser surfaces as an opaque
     // connection failure.
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = handle_raw_logs_ws(socket, deployment, exec_id, tail_entries).await {
+        if let Err(e) =
+            handle_raw_logs_ws(socket, deployment, exec_id, tail_entries, skip_tail_entries).await
+        {
             tracing::warn!("raw logs WS closed: {}", e);
         }
     })
@@ -65,6 +76,7 @@ async fn handle_raw_logs_ws(
     deployment: DeploymentImpl,
     exec_id: Uuid,
     tail_entries: Option<usize>,
+    skip_tail_entries: Option<usize>,
 ) -> anyhow::Result<()> {
     use std::sync::{
         Arc,
@@ -77,7 +89,7 @@ async fn handle_raw_logs_ws(
     // Get the raw stream — if not found, send finished and close cleanly
     let raw_stream = match deployment
         .container()
-        .stream_raw_logs(&exec_id, tail_entries)
+        .stream_raw_logs(&exec_id, tail_entries, skip_tail_entries)
         .await
     {
         Some(stream) => stream,
@@ -147,15 +159,16 @@ async fn stream_normalized_logs_ws(
     ws: SignedWsUpgrade,
     State(deployment): State<DeploymentImpl>,
     Path(exec_id): Path<Uuid>,
+    Query(query): Query<ExecutionProcessHistoryQuery>,
 ) -> impl IntoResponse {
-    let tail_entries = chat_history_tail_entries();
+    let tail_entries = query.tail_entries.or_else(chat_history_tail_entries);
+    let skip_tail_entries = query.skip_tail_entries;
 
     ws.on_upgrade(move |socket| async move {
         let stream = deployment
             .container()
-            .stream_normalized_logs(&exec_id, tail_entries)
+            .stream_normalized_logs(&exec_id, tail_entries, skip_tail_entries)
             .await;
-
         match stream {
             Some(stream) => {
                 let stream = stream.err_into::<anyhow::Error>().into_stream();

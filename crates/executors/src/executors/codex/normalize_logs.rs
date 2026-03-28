@@ -1453,7 +1453,32 @@ const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
     // exists on disk but isn't indexed in the state DB — even when the Sqlite feature flag is
     // disabled (which is the default). See: https://github.com/openai/codex/commit/c38a5958
     "state db missing rollout path for",
+    // Internal transport retries from Codex should not surface as user-visible chat content.
+    "Stream error: Reconnecting...",
+    "Falling back from WebSockets to HTTPS transport.",
 ];
+
+fn should_suppress_codex_stderr_line(line: &str) -> bool {
+    SUPPRESSED_STDERR_PATTERNS
+        .iter()
+        .any(|pattern| line.contains(pattern))
+}
+
+fn filter_codex_stderr_lines(lines: &mut Vec<String>, suppress_next_confirmation: &mut bool) {
+    lines.retain(|line| {
+        let trimmed = line.trim();
+        if *suppress_next_confirmation && trimmed == "Yes" {
+            *suppress_next_confirmation = false;
+            return false;
+        }
+
+        let suppressed = should_suppress_codex_stderr_line(trimmed);
+        *suppress_next_confirmation =
+            trimmed.contains("Falling back from WebSockets to HTTPS transport.");
+
+        !suppressed
+    });
+}
 
 /// Codex-specific stderr normalizer that filters noisy internal messages.
 fn normalize_codex_stderr_logs(
@@ -1462,6 +1487,7 @@ fn normalize_codex_stderr_logs(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut stderr = msg_store.stderr_chunked_stream();
+        let mut suppress_next_confirmation = false;
         let mut processor = PlainTextLogProcessor::builder()
             .normalized_entry_producer(|content: String| NormalizedEntry {
                 timestamp: None,
@@ -1473,12 +1499,8 @@ fn normalize_codex_stderr_logs(
             })
             .time_gap(Duration::from_secs(2))
             .index_provider(entry_index_provider)
-            .transform_lines(Box::new(|lines: &mut Vec<String>| {
-                lines.retain(|line| {
-                    !SUPPRESSED_STDERR_PATTERNS
-                        .iter()
-                        .any(|pattern| line.contains(pattern))
-                });
+            .transform_lines(Box::new(move |lines: &mut Vec<String>| {
+                filter_codex_stderr_lines(lines, &mut suppress_next_confirmation);
             }))
             .build();
 
@@ -3003,6 +3025,21 @@ mod tests {
             } => result.as_ref().and_then(|result| result.output.clone()),
             _ => None,
         }
+    }
+
+    #[test]
+    fn codex_transport_stderr_lines_are_suppressed() {
+        let mut lines = vec![
+            "Stream error: Reconnecting... 2/5 Some(ResponseStreamDisconnected { http_status_code: None })".to_string(),
+            "Falling back from WebSockets to HTTPS transport. stream disconnected before completion: Incomplete response returned, reason: max_output_tokens".to_string(),
+            "Yes".to_string(),
+            "real error".to_string(),
+        ];
+        let mut suppress_next_confirmation = false;
+
+        filter_codex_stderr_lines(&mut lines, &mut suppress_next_confirmation);
+
+        assert_eq!(lines, vec!["real error".to_string()]);
     }
 
     #[test]

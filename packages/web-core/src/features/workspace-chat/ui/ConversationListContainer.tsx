@@ -383,7 +383,13 @@ export const ConversationList = forwardRef<
     }
   };
 
-  const { isFirstTurn, isLoadingHistory } = useConversationHistory({
+  const {
+    isFirstTurn,
+    isLoadingHistory,
+    isLoadingOlderHistory,
+    hasOlderHistory,
+    loadOlderHistory,
+  } = useConversationHistory({
     attempt,
     onTimelineUpdated,
     scopeKey: conversationScopeKey,
@@ -777,27 +783,27 @@ export const ConversationList = forwardRef<
             )}
           </div>
 
-          {isLoadingHistory && !showLoader && (
-            <div className="flex flex-col items-center gap-2 px-double py-3">
-              <div className="flex w-full max-w-md flex-col gap-1.5">
-                <div className="flex items-center gap-2">
-                  <div className="h-2.5 w-16 animate-pulse rounded-full bg-foreground/10" />
-                  <div className="h-2.5 flex-1 animate-pulse rounded-full bg-foreground/[0.06]" />
-                </div>
-                <div className="flex items-center gap-2">
-                  <div
-                    className="h-2.5 w-24 animate-pulse rounded-full bg-foreground/[0.07]"
-                    style={{ animationDelay: '150ms' }}
-                  />
-                  <div
-                    className="h-2.5 w-32 animate-pulse rounded-full bg-foreground/[0.05]"
-                    style={{ animationDelay: '150ms' }}
-                  />
-                </div>
-              </div>
-              <span className="text-xs text-low">
-                {t('conversation.loadingEarlierMessages')}
-              </span>
+          {hasOlderHistory && !showLoader && (
+            <div className="flex justify-center px-double py-3">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-full border border-foreground/10 bg-panel px-4 py-2 text-sm text-low transition-colors hover:bg-panel/80 disabled:cursor-wait disabled:opacity-70"
+                onClick={() => {
+                  void loadOlderHistory();
+                }}
+                disabled={isLoadingHistory || isLoadingOlderHistory}
+              >
+                {isLoadingOlderHistory && (
+                  <SpinnerIcon className="size-4 animate-spin" />
+                )}
+                <span>
+                  {isLoadingOlderHistory
+                    ? t('conversation.loadingEarlierMessages')
+                    : t('conversation.loadOlderMessages', {
+                        defaultValue: 'Load older messages',
+                      })}
+                </span>
+              </button>
             </div>
           )}
 

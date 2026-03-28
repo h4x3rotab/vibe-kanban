@@ -54,7 +54,8 @@
     "subagent": {
       "defaultType": "Subagent"
     },
-    "loadingEarlierMessages": "Loading earlier messages"
+    "loadingEarlierMessages": "Loading earlier messages",
+    "loadOlderMessages": "Load older messages"
   },
   "folderPicker": {
     "legend": "Click folder names to navigate • Use action buttons to select",
