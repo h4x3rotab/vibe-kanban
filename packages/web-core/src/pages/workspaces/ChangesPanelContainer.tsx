@@ -574,15 +574,21 @@ const DiffFileItem = memo(function DiffFileItem({
 
   return (
     <div data-diff-path={filePath} className="rounded-sm">
-      <FileDiff<ExtendedCommentAnnotation>
-        fileDiff={fileDiffMetadata}
-        options={options}
-        lineAnnotations={annotations}
-        renderAnnotation={annotations ? renderAnnotation : undefined}
-        renderHeaderPrefix={renderHeaderPrefix}
-        renderHeaderMetadata={renderHeaderMetadata}
-        renderHoverUtility={expanded ? renderHoverUtility : undefined}
-      />
+      <div
+        className="overflow-x-auto overscroll-x-contain"
+        style={{ WebkitOverflowScrolling: 'touch' }}
+      >
+        <FileDiff<ExtendedCommentAnnotation>
+          className="block min-w-full w-max"
+          fileDiff={fileDiffMetadata}
+          options={options}
+          lineAnnotations={annotations}
+          renderAnnotation={annotations ? renderAnnotation : undefined}
+          renderHeaderPrefix={renderHeaderPrefix}
+          renderHeaderMetadata={renderHeaderMetadata}
+          renderHoverUtility={expanded ? renderHoverUtility : undefined}
+        />
+      </div>
     </div>
   );
 });
