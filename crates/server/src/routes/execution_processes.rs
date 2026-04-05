@@ -35,7 +35,6 @@ struct SessionExecutionProcessQuery {
     pub show_soft_deleted: Option<bool>,
 }
 
-async fn get_execution_process_by_id(
 #[derive(Debug, Default, Deserialize)]
 pub struct ExecutionProcessHistoryQuery {
     pub tail_entries: Option<usize>,

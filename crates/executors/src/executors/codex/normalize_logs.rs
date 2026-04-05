@@ -2771,8 +2771,8 @@ mod tests {
 
     use super::*;
     use crate::logs::{
-        ActionType, NormalizedEntryType, utils::EntryIndexProvider,
-        utils::patch::extract_normalized_entry_from_patch,
+        ActionType, NormalizedEntryType,
+        utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch},
     };
 
     fn latest_normalized_entries(msg_store: &MsgStore) -> Vec<NormalizedEntry> {
