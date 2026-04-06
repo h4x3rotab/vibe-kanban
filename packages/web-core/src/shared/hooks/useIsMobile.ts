@@ -36,15 +36,21 @@ export function isMobileViewport(): boolean {
 
 /** Detect real mobile device via user-agent (not just viewport width) */
 export function isRealMobileDevice(): boolean {
-  // Modern API: navigator.userAgentData.mobile (Chrome, Edge, Opera — ~76% of browsers)
+  const uaMatchesMobile =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Windows Phone|Mobi/i.test(
+      navigator.userAgent
+    );
+
+  // Modern API: navigator.userAgentData.mobile.
+  // Some desktop browsers in mobile emulation keep this false while overriding
+  // navigator.userAgent to a mobile UA, so a positive match from either signal
+  // should classify as mobile.
   const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
-  if (nav.userAgentData?.mobile !== undefined) {
-    return nav.userAgentData.mobile;
+  if (nav.userAgentData?.mobile === true) {
+    return true;
   }
-  // Fallback: user-agent string regex (Safari, Firefox)
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Windows Phone|Mobi/i.test(
-    navigator.userAgent
-  );
+
+  return uaMatchesMobile;
 }
 
 /** React hook version of isRealMobileDevice — stable, no re-renders on resize */

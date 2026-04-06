@@ -11,6 +11,7 @@ import {
   Virtualizer,
   WorkerPoolContextProvider,
 } from '@pierre/diffs/react';
+import '@/styles/diff-style-overrides.css';
 import type { DiffLineAnnotation, AnnotationSide } from '@pierre/diffs';
 const WorkerUrl = new URL(
   '@pierre/diffs/worker/worker-portable.js',
@@ -89,11 +90,18 @@ const NOOP = () => {};
 const PIERRE_DIFFS_THEME_CSS = `
   :host {
     position: relative;
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
   }
 
   [data-diffs-header] {
     background-color: hsl(var(--bg-primary));
     min-height: 40px;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
     position: sticky;
     top: 0;
     z-index: 10;
@@ -125,13 +133,23 @@ const PIERRE_DIFFS_THEME_CSS = `
   }
 
   [data-diffs-header] [data-metadata] {
+    flex: 0 0 auto;
     font-family: inherit;
     font-size: 0.75rem;
     gap: 8px;
   }
 
+  [data-header-content] {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
   [data-code] {
     border-radius: 0 0 4px 4px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
   }
 
   [data-separator="line-info"][data-separator-first] {
@@ -170,6 +188,12 @@ const PIERRE_DIFFS_THEME_CSS = `
 
   [data-code] {
     padding-bottom: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    width: 100%;
+    min-width: 0;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
   }
   [data-code]::-webkit-scrollbar {
     height: 8px;
@@ -186,7 +210,24 @@ const PIERRE_DIFFS_THEME_CSS = `
     background-color: hsl(var(--text-low) / 0.3);
   }
 
-  [data-diff][data-theme-type='light'] {
+  [data-diffs][data-overflow='scroll'] {
+    --diffs-code-grid: minmax(min-content, max-content) max-content;
+    width: 100%;
+    min-width: 0;
+  }
+
+  [data-overflow='scroll'] [data-line],
+  [data-overflow='scroll'] [data-no-newline] {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  [data-overflow='scroll'] [data-column-content] {
+    width: max-content;
+    min-width: 0;
+  }
+
+  [data-diffs][data-theme-type='light'] {
     --diffs-gap-style: none;
     --diffs-light-bg: hsl(var(--bg-primary));
     --diffs-bg-context-override: hsl(var(--bg-primary));
@@ -202,7 +243,7 @@ const PIERRE_DIFFS_THEME_CSS = `
     --diffs-fg-number-override: hsl(var(--text-low));
   }
 
-  [data-diff][data-theme-type='dark'] {
+  [data-diffs][data-theme-type='dark'] {
     --diffs-gap-style: none;
     --diffs-dark-bg: hsl(var(--bg-panel));
     --diffs-bg-context-override: hsl(var(--bg-panel));
@@ -217,6 +258,19 @@ const PIERRE_DIFFS_THEME_CSS = `
     --diffs-bg-deletion-number-override: hsl(12, 30%, 16%);
     --diffs-bg-deletion-hover-override: hsl(12, 30%, 23%);
     --diffs-fg-number-override: hsl(var(--text-low));
+  }
+
+  [data-diffs] {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  [data-diff],
+  [data-file] {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
   }
 `;
 
@@ -334,6 +388,8 @@ const DiffFileItem = memo(function DiffFileItem({
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
   const globalMode = useDiffViewMode();
+  const effectiveMode =
+    IS_MOBILE && globalMode === 'split' ? 'unified' : globalMode;
   const wrapText = useWrapTextDiff();
   const ignoreWhitespace = useIgnoreWhitespaceDiff();
 
@@ -405,18 +461,19 @@ const DiffFileItem = memo(function DiffFileItem({
   const options = useMemo(
     () => ({
       diffStyle:
-        globalMode === 'split' ? ('split' as const) : ('unified' as const),
+        effectiveMode === 'split' ? ('split' as const) : ('unified' as const),
       diffIndicators: 'classic' as const,
       themeType: actualTheme,
       overflow: wrapText ? ('wrap' as const) : ('scroll' as const),
       hunkSeparators: 'line-info' as const,
       collapsed: !expanded,
-      enableHoverUtility: true,
+      enableHoverUtility: !IS_MOBILE,
       onLineClick: handleLineClick,
+      onLineNumberClick: handleLineClick,
       theme: { dark: 'github-dark', light: 'github-light' } as const,
       unsafeCSS: PIERRE_DIFFS_THEME_CSS,
     }),
-    [globalMode, actualTheme, wrapText, expanded, handleLineClick]
+    [effectiveMode, actualTheme, wrapText, expanded, handleLineClick]
   );
 
   const handleToggle = useCallback(() => {
@@ -573,22 +630,19 @@ const DiffFileItem = memo(function DiffFileItem({
   );
 
   return (
-    <div data-diff-path={filePath} className="rounded-sm">
-      <div
-        className="overflow-x-auto overscroll-x-contain"
-        style={{ WebkitOverflowScrolling: 'touch' }}
-      >
-        <FileDiff<ExtendedCommentAnnotation>
-          className="block min-w-full w-max"
-          fileDiff={fileDiffMetadata}
-          options={options}
-          lineAnnotations={annotations}
-          renderAnnotation={annotations ? renderAnnotation : undefined}
-          renderHeaderPrefix={renderHeaderPrefix}
-          renderHeaderMetadata={renderHeaderMetadata}
-          renderHoverUtility={expanded ? renderHoverUtility : undefined}
-        />
-      </div>
+    <div data-diff-path={filePath} className="w-full min-w-0 rounded-sm">
+      <FileDiff<ExtendedCommentAnnotation>
+        className="block w-full min-w-0"
+        fileDiff={fileDiffMetadata}
+        options={options}
+        lineAnnotations={annotations}
+        renderAnnotation={annotations ? renderAnnotation : undefined}
+        renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderMetadata={renderHeaderMetadata}
+        renderHoverUtility={
+          expanded && !IS_MOBILE ? renderHoverUtility : undefined
+        }
+      />
     </div>
   );
 });
@@ -865,7 +919,9 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     >
       <Virtualizer
         {...({ ref: virtualizerRef } as Record<string, unknown>)}
-        className={`w-full h-full overflow-auto bg-secondary px-base pt-1 ${className}`}
+        className={`w-full h-full bg-secondary px-base pt-1 ${
+          IS_MOBILE ? 'overflow-y-auto overflow-x-hidden' : 'overflow-auto'
+        } ${className}`}
         contentClassName="flex flex-col gap-1"
         style={{ contain: 'layout style paint' }}
       >
